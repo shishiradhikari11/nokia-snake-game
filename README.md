@@ -106,6 +106,9 @@ The included workflow `.github/workflows/pages.yml` publishes the `src/` folder:
 3. The workflow runs on every push to `main`, or you can run it from the **Actions** tab. The game will be at
    `https://<your-user>.github.io/nokia-snake-game/`. Share that link, or a `?room=CODE` link, with friends.
 
+If the deploy fails within a few seconds without starting, GitHub is blocking `main` from publishing. Open
+**Settings → Environments → github-pages** and add `main` under **Deployment branches and tags**.
+
 ## Run locally
 
 ```bash
