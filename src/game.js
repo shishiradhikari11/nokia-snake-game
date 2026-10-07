@@ -147,18 +147,9 @@
       timed: true,
       usesStartLevel: true,
     },
-    duel: {
-      name: '2 Players',
-      desc: 'P1: arrows / right side. P2: WASD / left side.',
-      foodsPerLevel: 5,
-      tick: (lv) => Math.max(60, 170 - (lv - 1) * 10),
-      walls: () => edgeWalls(),
-      players: 2,
-      usesStartLevel: true,
-      noBest: true,
-    },
-    // Same rules as 2 Players, but each player is on their own device.
-    // The host runs the game; the guest only sends turns and draws snapshots.
+    // Two players, each on their own device. Crashing into a wall, yourself or
+    // the other snake loses; head-on is a draw. The host runs the game; the
+    // guest only sends turns and draws snapshots.
     online: {
       name: 'Online 2P',
       foodsPerLevel: 5,
@@ -586,11 +577,10 @@
     endGame(duelTitle(winner, 0), winner);
   }
 
-  // `me` is this device's player index (online) — local 2P just names the winner.
+  // `me` is this device's player index (0 = host, 1 = guest).
   function duelTitle(winner, me) {
     if (winner === -1) return 'DRAW';
-    if (net) return winner === me ? 'YOU WIN' : 'YOU LOSE';
-    return `P${winner + 1} WINS`;
+    return winner === me ? 'YOU WIN' : 'YOU LOSE';
   }
 
   function endGame(title, winner = -1) {
@@ -731,7 +721,7 @@
       ctx.fillRect(x + gap, y + cell / 2 - gap / 2, cell - gap * 2, gap);
       ctx.fillStyle = FG;
     }
-    // Skins apply in single player; in 2P the snakes keep solid vs hollow.
+    // Skins apply in single player; online the snakes keep solid vs hollow.
     const skin = isDuel() ? 'classic' : save.skin;
     players.forEach((p, i) => {
       p.snake.forEach((s, j) => {
@@ -858,7 +848,7 @@
   // Nokia-style options: wrap-around edges on/off and a starting speed level.
   function showSettings(index) {
     const st = save.settings;
-    showMenu('SETTINGS', 'Walls: Classic, Time Attack, 2P\nStart level: all but Maze', [
+    showMenu('SETTINGS', 'Walls: Classic, Time Attack, Online\nStart level: all but Maze', [
       { label: `Walls: ${st.wrap ? 'Off (wrap)' : 'On (solid)'}`, action: () => { st.wrap = !st.wrap; persist(); showSettings(0); } },
       { label: `Start level: ${st.startLevel}`, action: () => { st.startLevel = (st.startLevel % 9) + 1; persist(); showSettings(1); } },
       { label: 'Back', action: showMainMenu },
@@ -1189,8 +1179,7 @@
   }
 
   // `name` is a direction, 'select' (enter/space/centre button) or 'back'.
-  // `who` is the player the input belongs to (only matters in 2 Players).
-  function handleAction(name, who = 0) {
+  function handleAction(name) {
     if (menuItems.length) {
       if (name === 'up' || name === 'left') moveMenu(-1);
       else if (name === 'down' || name === 'right') moveMenu(1);
@@ -1202,14 +1191,15 @@
     if (name === 'select' || name === 'back') { pause(); return; }
     if (!DIRS[name]) return;
     if (isGuest()) net.link.send({ t: 'turn', d: name });
-    else turn(name, isDuel() && !net ? who : 0);
+    else turn(name, 0);
   }
 
-  // [action, player]; WASD steers P2 in 2 Players and P1 otherwise.
   const KEYS = {
-    ArrowUp: ['up', 0], ArrowDown: ['down', 0], ArrowLeft: ['left', 0], ArrowRight: ['right', 0],
-    KeyW: ['up', 1], KeyS: ['down', 1], KeyA: ['left', 1], KeyD: ['right', 1],
-    Space: ['select', 0], Enter: ['select', 0], KeyP: ['back', 0], Escape: ['back', 0],
+    ArrowUp: 'up', KeyW: 'up',
+    ArrowDown: 'down', KeyS: 'down',
+    ArrowLeft: 'left', KeyA: 'left',
+    ArrowRight: 'right', KeyD: 'right',
+    Space: 'select', Enter: 'select', KeyP: 'back', Escape: 'back',
   };
   window.addEventListener('keydown', (e) => {
     if (e.target === roomInput) {
@@ -1218,22 +1208,20 @@
       else if (e.key === 'Escape') { e.preventDefault(); showOnlineMenu(); }
       return;
     }
-    const k = KEYS[e.code];
-    if (!k) return;
+    const name = KEYS[e.code];
+    if (!name) return;
     e.preventDefault();
-    handleAction(k[0], k[1]);
+    handleAction(name);
   });
 
   pad.addEventListener('pointerdown', (e) => {
     const btn = e.target.closest('button');
     if (!btn) return;
     e.preventDefault();
-    handleAction(btn.dataset.dir === 'pause' ? 'select' : btn.dataset.dir, 0);
+    handleAction(btn.dataset.dir === 'pause' ? 'select' : btn.dataset.dir);
   });
 
   // Swipe anywhere on the screen (outside the d-pad and menu buttons) to steer.
-  // In 2 Players, swipes on the left half steer P2 and the right half P1.
-  // Tracked per pointer so both players can swipe at the same time.
   const touches = new Map();
   window.addEventListener('pointerdown', (e) => {
     if (e.target.closest('#pad, #menu, #room-input')) return;
@@ -1247,8 +1235,7 @@
     const dy = e.clientY - start.y;
     if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
     if (state !== 'playing' && state !== 'levelup') return;
-    const who = isDuel() && start.x < window.innerWidth / 2 ? 1 : 0;
-    handleAction(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up'), who);
+    handleAction(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up'));
   });
   window.addEventListener('pointercancel', (e) => touches.delete(e.pointerId));
 
