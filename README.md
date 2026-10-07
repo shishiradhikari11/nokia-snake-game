@@ -8,17 +8,22 @@ It is plain HTML, CSS and JavaScript, with no build tools or dependencies, and t
 - Green LCD look and diamond food, like the original
 - **Levels** start at 1. Each level clears after a set number of foods, then the next level is harder.
   Each food is worth as many points as the current level.
-- **4 game modes**:
+- **5 game modes**:
   | Mode | Rules |
   |---|---|
   | **Classic** | No walls; the snake wraps around the edges. Faster every level (5 foods per level). |
   | **Box** | A brick wall around the edge. Touch it and you're out. Faster every level. |
   | **Maze** | A new brick maze every level (6 foods per level), and the snake resets to its starting length. If you crash, you can **retry the level you reached** instead of starting over. Your furthest level is saved, so the menu offers "Maze · Lv N" to continue. After 8 hand-made mazes, every level adds more random bricks, and every maze is checked so no part of the board is sealed off. |
   | **Time Attack** | 60 seconds to score as much as you can. It still levels up and speeds up. |
-- **Bonus critter**: after every 5th food, a bonus critter appears for a short time. Catch it fast for extra points.
+  | **2 Players** | Two snakes on one screen, competing for the same food. Hitting a wall, yourself or the other snake loses. A head-on crash is a draw. |
+- **Settings**, like the old Nokia options menu:
+  - **Walls**: Off (the snake wraps around the edges) or On (a solid border). Applies to Classic, Time Attack and 2 Players.
+  - **Start level**: 1–9, so you can skip the slow early levels. Applies to every mode except Maze.
+- **Bonus critter**: after every 5th food, a plus-shaped bonus critter appears for a short time. Catch it fast for extra points.
   It blinks just before it leaves.
 - Best score saved separately for each mode
-- Controls: arrow keys or WASD, swiping, or the on-screen d-pad. Enter/Space or the centre button
+- Controls: arrow keys or WASD, swiping, or the on-screen d-pad. In 2 Players, P1 uses the arrows, the d-pad, or
+  swipes on the right half of the screen. P2 uses WASD or swipes on the left half. Enter/Space or the centre button
   selects in menus and pauses during play. Esc or P pauses too.
 - Works in portrait and landscape
 - Uses the YouTube Playables SDK:

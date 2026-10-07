@@ -66,10 +66,11 @@
   const MODES = {
     classic: {
       name: 'Classic',
-      desc: 'No walls. Faster every level.',
+      desc: 'Faster every level.',
       foodsPerLevel: 5,
       tick: (lv) => Math.max(55, 165 - (lv - 1) * 12),
-      walls: () => [],
+      walls: () => edgeWalls(),
+      usesStartLevel: true,
     },
     box: {
       name: 'Box',
@@ -77,6 +78,7 @@
       foodsPerLevel: 5,
       tick: (lv) => Math.max(60, 165 - (lv - 1) * 11),
       walls: () => border(),
+      usesStartLevel: true,
     },
     maze: {
       name: 'Maze',
@@ -92,10 +94,23 @@
       desc: '60 seconds. Eat as much as you can.',
       foodsPerLevel: 5,
       tick: (lv) => Math.max(55, 150 - (lv - 1) * 12),
-      walls: () => [],
+      walls: () => edgeWalls(),
       timed: true,
+      usesStartLevel: true,
+    },
+    duel: {
+      name: '2 Players',
+      desc: 'P1: arrows / right side. P2: WASD / left side.',
+      foodsPerLevel: 5,
+      tick: (lv) => Math.max(60, 170 - (lv - 1) * 10),
+      walls: () => edgeWalls(),
+      players: 2,
+      usesStartLevel: true,
+      noBest: true,
     },
   };
+  // The "Walls" setting: wrap around the screen edge, or a solid border.
+  const edgeWalls = () => (save.settings.wrap ? [] : border());
   const MODE_IDS = Object.keys(MODES);
 
   // ---- Maze layouts (20x20) ----------------------------------------------
@@ -201,10 +216,12 @@
   // ---- State -------------------------------------------------------------
   let cell = 16;
   let mode = 'classic';
-  let snake, dir, queuedDirs, food, bonus, bricks, score, level, foodsThisLevel, foodsTotal;
+  // One entry per snake: { snake, dir, queue, score, label }.
+  let players = [];
+  let food, bonus, bricks, level, foodsThisLevel, foodsTotal;
   let levelStartScore = 0;
   let timeLeft = 0;
-  let save = { best: {}, mazeLevel: 1 };
+  let save = { best: {}, mazeLevel: 1, settings: { wrap: true, startLevel: 1 } };
   let state = 'menu'; // menu | playing | paused | over | levelup
   let lastTick = 0;
   let lastFrame = 0;
@@ -258,35 +275,51 @@
 
   // ---- Game logic --------------------------------------------------------
   const M = () => MODES[mode];
+  const P1 = () => players[0];
+  const isDuel = () => players.length > 1;
 
   function newGame(startLevel) {
     level = startLevel;
-    score = 0;
     foodsTotal = 0;
-    snake = null;
+    players = [];
+    for (let i = 0; i < (M().players || 1); i++) players.push({ snake: null, score: 0, label: `P${i + 1}` });
     loadLevel();
   }
 
-  // Sets up walls, food and (when the mode wants it) a fresh snake for `level`.
+  function spawn(p, i) {
+    if (!isDuel()) {
+      p.snake = [{ x: START_X, y: START_ROW }, { x: START_X - 1, y: START_ROW }, { x: START_X - 2, y: START_ROW }];
+      p.dir = DIRS.right;
+    } else if (i === 0) {
+      // P1 top-left heading right, P2 bottom-right heading left.
+      p.snake = [{ x: 7, y: 5 }, { x: 6, y: 5 }, { x: 5, y: 5 }];
+      p.dir = DIRS.right;
+    } else {
+      p.snake = [{ x: 12, y: 14 }, { x: 13, y: 14 }, { x: 14, y: 14 }];
+      p.dir = DIRS.left;
+    }
+  }
+
+  // Sets up walls, food and (when the mode wants it) fresh snakes for `level`.
   function loadLevel() {
     bricks = new Set(M().walls(level).map(([x, y]) => key(x, y)));
-    if (!snake || M().resetSnakeEachLevel) {
-      snake = [{ x: START_X, y: START_ROW }, { x: START_X - 1, y: START_ROW }, { x: START_X - 2, y: START_ROW }];
-      dir = DIRS.right;
-    }
-    queuedDirs = [];
+    players.forEach((p, i) => {
+      if (!p.snake || M().resetSnakeEachLevel) spawn(p, i);
+      p.queue = [];
+    });
     foodsThisLevel = 0;
-    levelStartScore = score;
+    levelStartScore = P1().score;
     bonus = null;
-    if (M().timed && level === 1) timeLeft = TIME_ATTACK_MS;
+    if (M().timed && foodsTotal === 0) timeLeft = TIME_ATTACK_MS;
     placeFood();
     updateHud();
   }
 
   function freeCells() {
-    const head = snake[0];
+    const head = P1().snake[0];
     const reach = reachable(bricks, head.x, head.y);
-    const taken = new Set(snake.map((s) => key(s.x, s.y)));
+    const taken = new Set();
+    for (const p of players) for (const s of p.snake) taken.add(key(s.x, s.y));
     if (food) taken.add(key(food.x, food.y));
     if (bonus) taken.add(key(bonus.x, bonus.y));
     return [...reach].filter((k) => !taken.has(k));
@@ -304,39 +337,57 @@
     food = randomFree();
   }
 
+  const same = (a, b) => a && b && a.x === b.x && a.y === b.y;
+
   function step() {
-    if (queuedDirs.length) dir = queuedDirs.shift();
-    const head = {
-      x: (snake[0].x + dir.x + COLS) % COLS,
-      y: (snake[0].y + dir.y + ROWS) % ROWS,
-    };
-    const eating = food && head.x === food.x && head.y === food.y;
-    const eatingBonus = bonus && head.x === bonus.x && head.y === bonus.y;
-    // The tail moves out of the way this tick unless we are growing.
-    const body = eating ? snake : snake.slice(0, -1);
-    if (bricks.has(key(head.x, head.y)) || body.some((s) => s.x === head.x && s.y === head.y)) {
-      crash();
+    // Move every snake at once, then work out who crashed.
+    const moves = players.map((p) => {
+      if (p.queue.length) p.dir = p.queue.shift();
+      const head = {
+        x: (p.snake[0].x + p.dir.x + COLS) % COLS,
+        y: (p.snake[0].y + p.dir.y + ROWS) % ROWS,
+      };
+      return { p, head, eating: same(head, food), eatingBonus: same(head, bonus) };
+    });
+
+    // Cells that will be occupied after this tick: every body, minus tails
+    // that move away because their snake is not growing.
+    const crashed = moves.filter((m) => {
+      if (bricks.has(key(m.head.x, m.head.y))) return true;
+      for (const o of moves) {
+        const body = o.eating ? o.p.snake : o.p.snake.slice(0, -1);
+        if (body.some((s) => same(s, m.head))) return true;
+        if (o !== m && same(o.head, m.head)) return true; // head-on
+      }
+      return false;
+    });
+    if (crashed.length) {
+      crash(crashed.map((m) => m.p));
       return;
     }
-    snake.unshift(head);
 
-    if (bonus) {
-      if (eatingBonus) {
+    let ate = false;
+    for (const m of moves) {
+      m.p.snake.unshift(m.head);
+      if (m.eatingBonus) {
         // Worth more the faster you catch it.
-        score += Math.ceil((bonus.ticks / BONUS_TICKS) * 10) * level;
+        m.p.score += Math.ceil((bonus.ticks / BONUS_TICKS) * 10) * level;
         beep(1320, 0.12);
         bonus = null;
-        updateHud();
-      } else if (--bonus.ticks <= 0) {
-        bonus = null;
+      }
+      if (m.eating) {
+        m.p.score += level;
+        ate = true;
+      } else {
+        m.p.snake.pop();
       }
     }
-
-    if (!eating) {
-      snake.pop();
+    if (bonus && --bonus.ticks <= 0) bonus = null;
+    if (!ate) {
+      updateHud();
       return;
     }
-    score += level;
+
     foodsThisLevel++;
     foodsTotal++;
     beep(880, 0.05);
@@ -376,9 +427,16 @@
     }
   }
 
-  function crash() {
+  function crash(losers) {
     beep(220, 0.3);
-    endGame('GAME OVER');
+    if (!isDuel()) {
+      endGame('GAME OVER');
+    } else if (losers.length === players.length) {
+      endGame('DRAW');
+    } else {
+      const winner = players.find((p) => !losers.includes(p));
+      endGame(`${winner.label} WINS`);
+    }
   }
 
   function endGame(title) {
@@ -388,22 +446,25 @@
     if (M().keepLevelOnCrash) {
       items.push({ label: `Retry Level ${level}`, action: () => retryLevel() });
     }
-    items.push({ label: M().keepLevelOnCrash ? 'Restart Level 1' : 'Play again', action: () => startMode(mode, 1) });
+    const replay = M().keepLevelOnCrash ? 1 : startLevelFor(mode);
+    items.push({ label: M().keepLevelOnCrash ? 'Restart Level 1' : 'Play again', action: () => startMode(mode, replay) });
     items.push({ label: 'Menu', action: showMainMenu });
-    showMenu(title, `Score ${score}  ·  Level ${level}`, items);
+    const scores = isDuel() ? players.map((p) => `${p.label} ${p.score}`).join('  ·  ') : `Score ${P1().score}`;
+    showMenu(title, `${scores}  ·  Level ${level}`, items);
   }
 
   function retryLevel() {
     // Same level, same maze; the score goes back to where the level started.
-    score = levelStartScore;
-    snake = null;
+    P1().score = levelStartScore;
+    P1().snake = null;
     loadLevel();
     play();
   }
 
   function recordBest() {
-    const prev = save.best[mode] || 0;
-    if (score > prev) {
+    if (M().noBest) return;
+    const score = P1().score;
+    if (score > (save.best[mode] || 0)) {
       save.best[mode] = score;
       persist();
       // YouTube takes a single score, so report the best across all modes.
@@ -414,14 +475,20 @@
 
   function persist() { sdk.save(save); }
 
+  const pad4 = (n) => String(n || 0).padStart(4, '0');
+
   function updateHud() {
-    scoreEl.textContent = String(score || 0).padStart(4, '0');
-    if (M().timed && state !== 'menu') {
-      levelEl.textContent = `L${level} ${Math.ceil(timeLeft / 1000)}s`;
-    } else {
-      levelEl.textContent = `L${level || 1}`;
+    const inGame = state !== 'menu' && players.length;
+    const timer = M().timed && inGame ? ` ${Math.ceil(timeLeft / 1000)}s` : '';
+    levelEl.textContent = `L${level || 1}${timer}`;
+    if (inGame && isDuel()) {
+      scoreEl.textContent = `P1 ${pad4(players[0].score)}`;
+      bestEl.textContent = `P2 ${pad4(players[1].score)}`;
+      return;
     }
-    bestEl.textContent = `HI ${String(Math.max(save.best[mode] || 0, score || 0)).padStart(4, '0')}`;
+    const score = inGame ? P1().score : 0;
+    scoreEl.textContent = pad4(score);
+    bestEl.textContent = `HI ${pad4(Math.max(save.best[mode] || 0, score))}`;
   }
 
   // ---- Rendering ---------------------------------------------------------
@@ -430,9 +497,11 @@
     const h = cell * ROWS;
     ctx.fillStyle = BG;
     ctx.fillRect(0, 0, w, h);
-    if (!snake) return;
+    if (!players.length || !P1().snake) return;
     const gap = Math.max(1, Math.floor(cell / 8));
     ctx.fillStyle = FG;
+    ctx.strokeStyle = FG;
+    ctx.lineWidth = gap;
     for (const k of bricks) {
       // Brick: solid cell with a lighter notch, so it reads differently from the snake.
       const x = (k % COLS) * cell;
@@ -442,9 +511,16 @@
       ctx.fillRect(x + gap, y + cell / 2 - gap / 2, cell - gap * 2, gap);
       ctx.fillStyle = FG;
     }
-    for (const s of snake) {
-      ctx.fillRect(s.x * cell + gap, s.y * cell + gap, cell - gap * 2, cell - gap * 2);
-    }
+    players.forEach((p, i) => {
+      p.snake.forEach((s, j) => {
+        const x = s.x * cell + gap;
+        const y = s.y * cell + gap;
+        const size = cell - gap * 2;
+        // P2 is drawn hollow (with a solid head) so the two snakes are easy to tell apart.
+        if (i === 0 || j === 0) ctx.fillRect(x, y, size, size);
+        else ctx.strokeRect(x + gap / 2, y + gap / 2, size - gap, size - gap);
+      });
+    });
     if (food) {
       // Diamond-shaped food, like the original.
       const cx = food.x * cell + cell / 2;
@@ -458,14 +534,13 @@
       ctx.closePath();
       ctx.fill();
     }
-    // Bonus critter: hollow square with a dot; blinks when about to leave.
+    // Bonus critter: a plus-shaped bug; blinks when about to leave.
     if (bonus && (bonus.ticks > 10 || bonus.ticks % 2 === 0)) {
       const x = bonus.x * cell;
       const y = bonus.y * cell;
-      ctx.lineWidth = gap;
-      ctx.strokeStyle = FG;
-      ctx.strokeRect(x + gap * 1.5, y + gap * 1.5, cell - gap * 3, cell - gap * 3);
-      ctx.fillRect(x + cell / 2 - gap, y + cell / 2 - gap, gap * 2, gap * 2);
+      const t = Math.max(2, Math.floor(cell / 3));
+      ctx.fillRect(x + gap, y + (cell - t) / 2, cell - gap * 2, t);
+      ctx.fillRect(x + (cell - t) / 2, y + gap, t, cell - gap * 2);
     }
   }
 
@@ -492,11 +567,11 @@
   }
 
   // ---- Overlay / menus ---------------------------------------------------
-  function showMenu(title, text, items) {
+  function showMenu(title, text, items, index = 0) {
     overlayTitle.textContent = title;
     overlayText.textContent = text;
     menuItems = items;
-    menuIndex = 0;
+    menuIndex = index;
     menuEl.replaceChildren(...items.map((item, i) => {
       const b = document.createElement('button');
       b.textContent = item.label;
@@ -523,15 +598,29 @@
     if (item) item.action();
   }
 
+  const startLevelFor = (id) => (MODES[id].usesStartLevel ? save.settings.startLevel : 1);
+
   function showMainMenu() {
     state = 'menu';
     const items = MODE_IDS.map((id) => {
       const m = MODES[id];
       const label = id === 'maze' && save.mazeLevel > 1 ? `${m.name} · Lv ${save.mazeLevel}` : m.name;
-      return { label, action: () => startMode(id, id === 'maze' ? save.mazeLevel : 1) };
+      return { label, action: () => startMode(id, id === 'maze' ? save.mazeLevel : startLevelFor(id)) };
     });
     if (save.mazeLevel > 1) items.splice(3, 0, { label: 'Maze · from Lv 1', action: () => startMode('maze', 1) });
+    items.push({ label: 'Settings', action: () => showSettings(0) });
     showMenu('SNAKE', 'Choose a mode', items);
+    updateHud();
+  }
+
+  // Nokia-style options: wrap-around edges on/off and a starting speed level.
+  function showSettings(index) {
+    const st = save.settings;
+    showMenu('SETTINGS', 'Walls: Classic, Time Attack, 2P\nStart level: all but Maze', [
+      { label: `Walls: ${st.wrap ? 'Off (wrap)' : 'On (solid)'}`, action: () => { st.wrap = !st.wrap; persist(); showSettings(0); } },
+      { label: `Start level: ${st.startLevel}`, action: () => { st.startLevel = (st.startLevel % 9) + 1; persist(); showSettings(1); } },
+      { label: 'Back', action: showMainMenu },
+    ], index);
   }
 
   function toast(text, ms, done) {
@@ -576,15 +665,18 @@
   document.addEventListener('visibilitychange', () => { if (document.hidden) pause(); });
 
   // ---- Input -------------------------------------------------------------
-  function turn(name) {
+  function turn(name, who = 0) {
+    const p = players[who];
+    if (!p) return;
     const next = DIRS[name];
-    const last = queuedDirs.length ? queuedDirs[queuedDirs.length - 1] : dir;
+    const last = p.queue.length ? p.queue[p.queue.length - 1] : p.dir;
     if (next === last || (next.x === -last.x && next.y === -last.y)) return;
-    if (queuedDirs.length < 2) queuedDirs.push(next);
+    if (p.queue.length < 2) p.queue.push(next);
   }
 
   // `name` is a direction, 'select' (enter/space/centre button) or 'back'.
-  function handleAction(name) {
+  // `who` is the player the input belongs to (only matters in 2 Players).
+  function handleAction(name, who = 0) {
     if (menuItems.length) {
       if (name === 'up' || name === 'left') moveMenu(-1);
       else if (name === 'down' || name === 'right') moveMenu(1);
@@ -594,45 +686,49 @@
     }
     if (state !== 'playing' && state !== 'levelup') return;
     if (name === 'select' || name === 'back') { pause(); return; }
-    if (DIRS[name]) turn(name);
+    if (DIRS[name]) turn(name, isDuel() ? who : 0);
   }
 
+  // [action, player]; WASD steers P2 in 2 Players and P1 otherwise.
   const KEYS = {
-    ArrowUp: 'up', KeyW: 'up',
-    ArrowDown: 'down', KeyS: 'down',
-    ArrowLeft: 'left', KeyA: 'left',
-    ArrowRight: 'right', KeyD: 'right',
-    Space: 'select', Enter: 'select', KeyP: 'back', Escape: 'back',
+    ArrowUp: ['up', 0], ArrowDown: ['down', 0], ArrowLeft: ['left', 0], ArrowRight: ['right', 0],
+    KeyW: ['up', 1], KeyS: ['down', 1], KeyA: ['left', 1], KeyD: ['right', 1],
+    Space: ['select', 0], Enter: ['select', 0], KeyP: ['back', 0], Escape: ['back', 0],
   };
   window.addEventListener('keydown', (e) => {
-    const name = KEYS[e.code];
-    if (!name) return;
+    const k = KEYS[e.code];
+    if (!k) return;
     e.preventDefault();
-    handleAction(name);
+    handleAction(k[0], k[1]);
   });
 
   pad.addEventListener('pointerdown', (e) => {
     const btn = e.target.closest('button');
     if (!btn) return;
     e.preventDefault();
-    handleAction(btn.dataset.dir === 'pause' ? 'select' : btn.dataset.dir);
+    handleAction(btn.dataset.dir === 'pause' ? 'select' : btn.dataset.dir, 0);
   });
 
   // Swipe anywhere on the screen (outside the d-pad and menu buttons) to steer.
-  let touchStart = null;
+  // In 2 Players, swipes on the left half steer P2 and the right half P1.
+  // Tracked per pointer so both players can swipe at the same time.
+  const touches = new Map();
   window.addEventListener('pointerdown', (e) => {
     if (e.target.closest('#pad, #menu')) return;
-    touchStart = { x: e.clientX, y: e.clientY };
+    touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
   });
   window.addEventListener('pointerup', (e) => {
-    if (!touchStart) return;
-    const dx = e.clientX - touchStart.x;
-    const dy = e.clientY - touchStart.y;
-    touchStart = null;
+    const start = touches.get(e.pointerId);
+    if (!start) return;
+    touches.delete(e.pointerId);
+    const dx = e.clientX - start.x;
+    const dy = e.clientY - start.y;
     if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
     if (state !== 'playing' && state !== 'levelup') return;
-    turn(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up'));
+    const who = isDuel() && start.x < window.innerWidth / 2 ? 1 : 0;
+    turn(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up'), who);
   });
+  window.addEventListener('pointercancel', (e) => touches.delete(e.pointerId));
 
   // ---- Boot --------------------------------------------------------------
   async function boot() {
@@ -643,9 +739,12 @@
     if (Number.isInteger(data.best)) save.best.classic = data.best;
     else if (data.best && typeof data.best === 'object') save.best = data.best;
     if (Number.isInteger(data.mazeLevel) && data.mazeLevel > 0) save.mazeLevel = data.mazeLevel;
+    if (data.settings) {
+      if (typeof data.settings.wrap === 'boolean') save.settings.wrap = data.settings.wrap;
+      const sl = data.settings.startLevel;
+      if (Number.isInteger(sl) && sl >= 1 && sl <= 9) save.settings.startLevel = sl;
+    }
     level = 1;
-    score = 0;
-    updateHud();
     showMainMenu();
     sdk.gameReady();
     requestAnimationFrame(loop);
