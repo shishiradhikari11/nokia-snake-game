@@ -1,7 +1,7 @@
 # Nokia Snake: YouTube Playable
 
 A classic Nokia 3310-style Snake game built as a [YouTube Playable](https://developers.google.com/youtube/gaming/playables).
-It is plain HTML, CSS and JavaScript, with no build tools or dependencies, and the YouTube bundle is about 41 KB.
+It is plain HTML, CSS and JavaScript, with no build tools or dependencies, and the YouTube bundle is about 50 KB.
 
 ## Features
 
@@ -23,6 +23,7 @@ It is plain HTML, CSS and JavaScript, with no build tools or dependencies, and t
 - **Bonus critter**: after every 5th food, a plus-shaped bonus critter appears for a short time. Catch it fast for extra points.
   It blinks just before it leaves.
 - Best score saved separately for each mode
+- **Coins, Shop and ads.** See [Coins, Shop & ads](#coins-shop--ads) below.
 - Controls: arrow keys or WASD, swiping, or the on-screen d-pad. In 2 Players, P1 uses the arrows, the d-pad, or
   swipes on the right half of the screen. P2 uses WASD or swipes on the left half. Enter/Space or the centre button
   selects in menus and pauses during play. Esc or P pauses too.
@@ -35,6 +36,42 @@ It is plain HTML, CSS and JavaScript, with no build tools or dependencies, and t
   - The best score across all modes is reported with `engagement.sendScore()`
   - Errors are reported with `health.logError()`
 - Outside YouTube it still runs, and the high score is saved in `localStorage`
+
+## Coins, Shop & ads
+
+**Earning coins** (single-player modes only):
+
+| How | Coins |
+|---|---|
+| Each food | +1 |
+| Bonus critter | +3 |
+| Each level cleared | +5 |
+| Shop → **Watch ad** (rewarded ad) | +25 |
+| Game over → **Double coins** (rewarded ad) | doubles the coins from that run |
+
+**Spending coins:**
+- **Continue** after a game over: 30 coins, or **free if you watch an ad**. You keep your score and level, and get a
+  fresh snake (in Time Attack, +15 seconds instead). Allowed once per run.
+- **Shop → Themes:** 3310 Blue (200), Amber (400), Classic Gray (600), Night Mode (800)
+- **Shop → Snake skins:** Striped (150), Dotted (300), Chunky (500)
+
+**Ads** use the YouTube Playables ads API (`ytgame.ads`, currently a public preview):
+- **Pre-roll:** YouTube shows it automatically while the game loads. No code needed.
+- **Interstitial (ad break):** `requestInterstitialAd()` is called between levels once the player has cleared
+  **Level 5**, at most once every **2 minutes**. The game freezes during the ad, then shows "LEVEL N" before play resumes.
+  YouTube decides whether an ad plays and how long it is.
+- **Rewarded:** `requestRewardedAd(id)` runs only when the player chooses it. Coins or the continue are given only if
+  it returns `true`. Each reward type uses one fixed ID: `coins-25-reward`, `continue-run-reward` and
+  `double-coins-reward`.
+- 2-player modes show no ads and give no coins.
+- Outside YouTube (the web version) there is no ad network, so ad options are hidden. Open the page with
+  `?fakeads` to try the ad flow with a 3–5 second placeholder.
+
+**Rules to know:**
+- **Selling coins for real money is not allowed** on YouTube Playables (no in-game purchases). YouTube says it may
+  test in-game purchases in 2027. Coins can only be earned.
+- Ad revenue goes through YouTube's Playables monetization program, which YouTube is still piloting with selected
+  developers. Ask about it when you're onboarded.
 
 ## Online 2P
 

@@ -38,6 +38,55 @@
     onResume(cb) { if (inPlayables) yt.system.onResume(cb); },
   };
 
+  // ---- Ads (YouTube Playables ads API, public preview) -------------------
+  // YouTube picks and plays the ad; the game only asks at natural breaks.
+  // Outside YouTube there is no ad network, so ads are unavailable, unless the
+  // page is opened with ?fakeads to preview the flow with a placeholder ad.
+  const FAKE_ADS = !inPlayables && new URLSearchParams(location.search).has('fakeads');
+  let adPlaying = false;
+
+  const ads = {
+    get available() { return (inPlayables && !!yt.ads) || FAKE_ADS; },
+    // Interstitial: may or may not show; never reward for it.
+    async interstitial() {
+      adPlaying = true;
+      try {
+        if (inPlayables && yt.ads) await yt.ads.requestInterstitialAd();
+        else if (FAKE_ADS) await fakeAd('Ad break', 3);
+      } catch (e) {
+        logError(e);
+      } finally {
+        adPlaying = false;
+      }
+    },
+    // Rewarded: resolves true only if the player watched it, so only then reward.
+    async rewarded(rewardId) {
+      adPlaying = true;
+      try {
+        if (inPlayables && yt.ads) return !!(await yt.ads.requestRewardedAd(rewardId));
+        if (FAKE_ADS) { await fakeAd('Rewarded ad', 5); return true; }
+        return false;
+      } catch (e) {
+        logError(e);
+        return false;
+      } finally {
+        adPlaying = false;
+      }
+    },
+  };
+
+  // Placeholder ad for previewing the flow outside YouTube (?fakeads).
+  function fakeAd(label, seconds) {
+    return new Promise((resolve) => {
+      const show = (n) => showMenu('AD', `${label} · ${n}s\n(test placeholder)`, []);
+      let n = seconds;
+      show(n);
+      const timer = setInterval(() => {
+        if (--n <= 0) { clearInterval(timer); resolve(); } else show(n);
+      }, 1000);
+    });
+  }
+
   function logError(e) {
     console.error(e);
     if (inPlayables) yt.health.logError();
@@ -47,8 +96,8 @@
   // ---- Constants ---------------------------------------------------------
   const COLS = 20;
   const ROWS = 20;
-  const FG = '#43523d';
-  const BG = '#c7f0d8';
+  let FG = '#43523d';
+  let BG = '#c7f0d8';
   const DIRS = {
     up: { x: 0, y: -1 },
     down: { x: 0, y: 1 },
@@ -121,6 +170,34 @@
       hidden: true,
     },
   };
+  // ---- Coins & shop --------------------------------------------------------
+  // Coins are only earned (playing, rewarded ads) and spent in-game; YouTube
+  // Playables does not allow selling them for real money.
+  const COINS_PER_FOOD = 1;
+  const COINS_PER_BONUS = 3;
+  const COINS_PER_LEVEL = 5;
+  const REWARD_COINS = 25;
+  const CONTINUE_COST = 30;
+  const CONTINUE_SECONDS = 15;          // Time Attack: extra time on continue
+  const INTERSTITIAL_FROM_LEVEL = 5;    // ad breaks start once level 5 is cleared
+  const INTERSTITIAL_GAP_MS = 120000;   // at most one ad break every 2 minutes
+  // Rewarded-ad IDs: one fixed ID per reward type, no user data.
+  const REWARD_IDS = { coins: 'coins-25-reward', continue: 'continue-run-reward', double: 'double-coins-reward' };
+
+  const THEMES = {
+    nokia: { name: 'Nokia Green', bg: '#c7f0d8', fg: '#43523d', price: 0 },
+    blue: { name: '3310 Blue', bg: '#bfd9ec', fg: '#1e3550', price: 200 },
+    amber: { name: 'Amber', bg: '#ffd889', fg: '#5b3b00', price: 400 },
+    gray: { name: 'Classic Gray', bg: '#d6d6cc', fg: '#2b2b2b', price: 600 },
+    night: { name: 'Night Mode', bg: '#18261b', fg: '#9fe3a9', price: 800 },
+  };
+  const SKINS = {
+    classic: { name: 'Classic', price: 0 },
+    striped: { name: 'Striped', price: 150 },
+    dots: { name: 'Dotted', price: 300 },
+    chunky: { name: 'Chunky', price: 500 },
+  };
+
   // The "Walls" setting: wrap around the screen edge, or a solid border.
   const edgeWalls = () => (save.settings.wrap ? [] : border());
   const MODE_IDS = Object.keys(MODES).filter((id) => !MODES[id].hidden);
@@ -234,7 +311,23 @@
   let food, bonus, bricks, level, foodsThisLevel, foodsTotal;
   let levelStartScore = 0;
   let timeLeft = 0;
-  let save = { best: {}, mazeLevel: 1, settings: { wrap: true, startLevel: 1 } };
+  let save = {
+    best: {},
+    mazeLevel: 1,
+    settings: { wrap: true, startLevel: 1 },
+    coins: 0,
+    owned: { theme: ['nokia'], skin: ['classic'] },
+    theme: 'nokia',
+    skin: 'classic',
+  };
+  // Per-run economy state.
+  let runCoins = 0;
+  let continued = false;
+  let doubled = false;
+  let endReason = 'crash';
+  let lastTitle = '';
+  let adBusy = false;
+  let lastInterstitial = 0;
   let state = 'menu'; // menu | playing | paused | over | levelup
   let lastTick = 0;
   let lastFrame = 0;
@@ -253,7 +346,7 @@
 
   // ---- Audio (tiny Nokia-style beeps via WebAudio, no asset files) -------
   function beep(freq, duration) {
-    if (!audioOn) return;
+    if (!audioOn || adPlaying) return;
     try {
       audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
       if (audioCtx.state === 'suspended') audioCtx.resume();
@@ -301,6 +394,9 @@
   function newGame(startLevel) {
     level = startLevel;
     foodsTotal = 0;
+    runCoins = 0;
+    continued = false;
+    doubled = false;
     players = [];
     for (let i = 0; i < (M().players || 1); i++) players.push({ snake: null, score: 0, label: `P${i + 1}` });
     loadLevel();
@@ -392,11 +488,13 @@
       if (m.eatingBonus) {
         // Worth more the faster you catch it.
         m.p.score += Math.ceil((bonus.ticks / BONUS_TICKS) * 10) * level;
+        earnCoins(COINS_PER_BONUS);
         beep(1320, 0.12);
         bonus = null;
       }
       if (m.eating) {
         m.p.score += level;
+        earnCoins(COINS_PER_FOOD);
         ate = true;
       } else {
         m.p.snake.pop();
@@ -425,30 +523,61 @@
   }
 
   function levelUp() {
+    const cleared = level;
     level++;
     beep(1047, 0.15);
-    if (mode === 'maze' && level > save.mazeLevel) {
-      save.mazeLevel = level;
-      persist();
-    }
-    if (M().resetSnakeEachLevel) {
-      // New maze: freeze briefly so the player can see the layout.
-      state = 'levelup';
-      loadLevel();
+    earnCoins(COINS_PER_LEVEL);
+    if (mode === 'maze' && level > save.mazeLevel) save.mazeLevel = level;
+    if (players.length === 1) persist();
+    const adBreak = wantsInterstitial(cleared);
+    loadLevel();
+    if (adBreak) {
+      // Natural break between levels: show an ad, then a short "get ready".
+      state = 'ad';
       draw();
-      toast(`LEVEL ${level}`, 1300, () => {
-        if (state !== 'levelup') return;
-        state = 'playing';
-        lastTick = performance.now();
+      lastInterstitial = performance.now();
+      ads.interstitial().then(() => {
+        if (state !== 'ad') return;
+        hideOverlay();
+        freezeThen(`LEVEL ${level}`, 1300);
       });
+    } else if (M().resetSnakeEachLevel) {
+      // New maze: freeze briefly so the player can see the layout.
+      freezeThen(`LEVEL ${level}`, 1300);
     } else {
-      loadLevel();
       toast(`LEVEL ${level}`, 900);
     }
   }
 
+  // Holds the game still while `text` shows, then carries on playing.
+  function freezeThen(text, ms) {
+    state = 'levelup';
+    draw();
+    broadcast();
+    toast(text, ms, () => {
+      if (state !== 'levelup') return;
+      state = 'playing';
+      lastTick = performance.now();
+      broadcast();
+    });
+  }
+
+  function wantsInterstitial(clearedLevel) {
+    return players.length === 1 &&
+      clearedLevel >= INTERSTITIAL_FROM_LEVEL &&
+      ads.available &&
+      performance.now() - lastInterstitial >= INTERSTITIAL_GAP_MS;
+  }
+
+  function earnCoins(n) {
+    if (players.length !== 1) return; // no coins in 2-player modes
+    save.coins += n;
+    runCoins += n;
+  }
+
   function crash(losers) {
     beep(220, 0.3);
+    endReason = 'crash';
     if (!isDuel()) {
       endGame('GAME OVER');
       return;
@@ -466,9 +595,10 @@
 
   function endGame(title, winner = -1) {
     state = 'over';
+    lastTitle = title;
     recordBest();
     const scores = isDuel() ? players.map((p) => `${p.label} ${p.score}`).join('  ·  ') : `Score ${P1().score}`;
-    const text = `${scores}  ·  Level ${level}`;
+    let text = `${scores}  ·  Level ${level}`;
     if (isHost()) {
       net.link.send({ t: 'over', winner, text });
       showMenu(title, text, [
@@ -478,6 +608,31 @@
       return;
     }
     const items = [];
+    if (players.length === 1) {
+      persist();
+      text += `\n+${runCoins} coins  ·  You have ${save.coins}`;
+      if (!continued) {
+        if (ads.available) {
+          items.push({ label: 'Continue · watch ad', action: () => rewardThen(REWARD_IDS.continue, continueRun, () => endGame(lastTitle)) });
+        }
+        if (save.coins >= CONTINUE_COST) {
+          items.push({ label: `Continue · ${CONTINUE_COST} coins`, action: () => { save.coins -= CONTINUE_COST; persist(); continueRun(); } });
+        }
+      }
+      if (runCoins > 0 && !doubled && ads.available) {
+        items.push({
+          label: `Double coins (+${runCoins}) · ad`,
+          action: () => rewardThen(REWARD_IDS.double, () => {
+            save.coins += runCoins;
+            doubled = true;
+            persist();
+            beep(1320, 0.12);
+            toast(`+${runCoins} COINS`, 1200);
+            endGame(lastTitle);
+          }, () => endGame(lastTitle)),
+        });
+      }
+    }
     if (M().keepLevelOnCrash) {
       items.push({ label: `Retry Level ${level}`, action: () => retryLevel() });
     }
@@ -485,6 +640,37 @@
     items.push({ label: M().keepLevelOnCrash ? 'Restart Level 1' : 'Play again', action: () => startMode(mode, replay) });
     items.push({ label: 'Menu', action: showMainMenu });
     showMenu(title, text, items);
+  }
+
+  // Carry on the same run: same score and level, fresh snake (or more time).
+  function continueRun() {
+    continued = true;
+    if (endReason === 'time') {
+      timeLeft = CONTINUE_SECONDS * 1000;
+    } else {
+      spawn(P1(), 0);
+      P1().queue = [];
+      bonus = null;
+      if (!food || P1().snake.some((s) => same(s, food))) placeFood();
+    }
+    hideOverlay();
+    updateHud();
+    freezeThen('CONTINUE!', 1000);
+  }
+
+  // Plays a rewarded ad and calls onReward only if it was watched.
+  async function rewardThen(rewardId, onReward, onNoReward) {
+    if (adBusy) return;
+    adBusy = true;
+    showMenu('AD', 'Loading ad…', []);
+    const watched = await ads.rewarded(rewardId);
+    adBusy = false;
+    if (watched) {
+      onReward();
+    } else {
+      onNoReward();
+      toast('NO AD RIGHT NOW', 1500);
+    }
   }
 
   function retryLevel() {
@@ -545,14 +731,27 @@
       ctx.fillRect(x + gap, y + cell / 2 - gap / 2, cell - gap * 2, gap);
       ctx.fillStyle = FG;
     }
+    // Skins apply in single player; in 2P the snakes keep solid vs hollow.
+    const skin = isDuel() ? 'classic' : save.skin;
     players.forEach((p, i) => {
       p.snake.forEach((s, j) => {
         const x = s.x * cell + gap;
         const y = s.y * cell + gap;
         const size = cell - gap * 2;
-        // P2 is drawn hollow (with a solid head) so the two snakes are easy to tell apart.
-        if (i === 0 || j === 0) ctx.fillRect(x, y, size, size);
-        else ctx.strokeRect(x + gap / 2, y + gap / 2, size - gap, size - gap);
+        const hollow = () => ctx.strokeRect(x + gap / 2, y + gap / 2, size - gap, size - gap);
+        if (i === 1) {
+          // P2 is drawn hollow (with a solid head) so the two snakes are easy to tell apart.
+          if (j === 0) ctx.fillRect(x, y, size, size); else hollow();
+        } else if (skin === 'striped' && j % 2 === 1) {
+          hollow();
+        } else if (skin === 'dots' && j > 0) {
+          const d = Math.max(2, Math.floor(size / 2));
+          ctx.fillRect(s.x * cell + (cell - d) / 2, s.y * cell + (cell - d) / 2, d, d);
+        } else if (skin === 'chunky') {
+          ctx.fillRect(s.x * cell, s.y * cell, cell, cell);
+        } else {
+          ctx.fillRect(x, y, size, size);
+        }
       });
     });
     if (food) {
@@ -588,6 +787,7 @@
         if (timeLeft <= 0) {
           timeLeft = 0;
           beep(660, 0.3);
+          endReason = 'time';
           endGame("TIME'S UP");
         }
       }
@@ -620,6 +820,8 @@
 
   function highlightMenu() {
     [...menuEl.children].forEach((b, i) => b.classList.toggle('selected', i === menuIndex));
+    const selected = menuEl.children[menuIndex];
+    if (selected) selected.scrollIntoView({ block: 'nearest' });
   }
 
   function moveMenu(delta) {
@@ -647,8 +849,9 @@
     // Online play needs network access, which YouTube Playables does not allow,
     // so it is only offered in the web version.
     if (!inPlayables) items.push({ label: 'Online 2P', action: openOnline });
+    items.push({ label: 'Shop', action: () => showShop(0) });
     items.push({ label: 'Settings', action: () => showSettings(0) });
-    showMenu('SNAKE', 'Choose a mode', items);
+    showMenu('SNAKE', `Choose a mode  ·  ${save.coins} coins`, items);
     updateHud();
   }
 
@@ -660,6 +863,63 @@
       { label: `Start level: ${st.startLevel}`, action: () => { st.startLevel = (st.startLevel % 9) + 1; persist(); showSettings(1); } },
       { label: 'Back', action: showMainMenu },
     ], index);
+  }
+
+  function showShop(index) {
+    state = 'menu';
+    const items = [
+      { label: 'Themes', action: () => showCatalog('theme', 0) },
+      { label: 'Snake skins', action: () => showCatalog('skin', 0) },
+    ];
+    if (ads.available) {
+      items.push({
+        label: `Watch ad · +${REWARD_COINS} coins`,
+        action: () => rewardThen(REWARD_IDS.coins, () => {
+          save.coins += REWARD_COINS;
+          persist();
+          beep(1320, 0.12);
+          toast(`+${REWARD_COINS} COINS`, 1200);
+          showShop(2);
+        }, () => showShop(2)),
+      });
+    }
+    items.push({ label: 'Back', action: showMainMenu });
+    showMenu('SHOP', `Coins: ${save.coins}`, items, index);
+  }
+
+  // Lists themes or skins: buy with coins, or equip one you own.
+  function showCatalog(kind, index) {
+    const table = kind === 'theme' ? THEMES : SKINS;
+    const owned = save.owned[kind];
+    const items = Object.entries(table).map(([id, entry], i) => ({
+      label: id === save[kind] ? `✓ ${entry.name}` : owned.includes(id) ? entry.name : `${entry.name} · ${entry.price} coins`,
+      action: () => {
+        if (!owned.includes(id)) {
+          if (save.coins < entry.price) {
+            toast('NOT ENOUGH COINS', 1200);
+            return;
+          }
+          save.coins -= entry.price;
+          owned.push(id);
+          beep(1047, 0.15);
+        }
+        save[kind] = id;
+        persist();
+        applyTheme();
+        showCatalog(kind, i);
+      },
+    }));
+    items.push({ label: 'Back', action: () => showShop(kind === 'theme' ? 0 : 1) });
+    showMenu(kind === 'theme' ? 'THEMES' : 'SKINS', `Coins: ${save.coins}`, items, index);
+  }
+
+  function applyTheme() {
+    const t = THEMES[save.theme] || THEMES.nokia;
+    FG = t.fg;
+    BG = t.bg;
+    document.documentElement.style.setProperty('--lcd-fg', t.fg);
+    document.documentElement.style.setProperty('--lcd-bg', t.bg);
+    draw();
   }
 
   function toast(text, ms, done) {
@@ -679,10 +939,14 @@
     toast(`${M().name.toUpperCase()} · L${level}`, 900);
   }
 
-  function play() {
+  function hideOverlay() {
     overlay.classList.add('hidden');
     menuItems = [];
     menuEl.replaceChildren();
+  }
+
+  function play() {
+    hideOverlay();
     state = 'playing';
     lastTick = performance.now();
     updateHud();
@@ -703,7 +967,7 @@
       { label: 'Resume', action: play },
       net
         ? { label: 'Leave game', action: leaveOnline }
-        : { label: 'Quit to menu', action: () => { recordBest(); showMainMenu(); } },
+        : { label: 'Quit to menu', action: () => { recordBest(); persist(); showMainMenu(); } },
     ]);
   }
 
@@ -1002,6 +1266,14 @@
       const sl = data.settings.startLevel;
       if (Number.isInteger(sl) && sl >= 1 && sl <= 9) save.settings.startLevel = sl;
     }
+    if (Number.isInteger(data.coins) && data.coins >= 0) save.coins = data.coins;
+    for (const [kind, table] of [['theme', THEMES], ['skin', SKINS]]) {
+      const owned = data.owned && Array.isArray(data.owned[kind]) ? data.owned[kind].filter((id) => table[id]) : [];
+      save.owned[kind] = [...new Set([...save.owned[kind], ...owned])];
+      if (save.owned[kind].includes(data[kind])) save[kind] = data[kind];
+    }
+    applyTheme();
+    lastInterstitial = performance.now(); // YouTube already shows a pre-roll at load
     level = 1;
     showMainMenu();
     const room = new URLSearchParams(location.search).get('room');
