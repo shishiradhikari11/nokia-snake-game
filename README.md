@@ -25,6 +25,9 @@ It is plain HTML, CSS and JavaScript, with no build tools or dependencies, and t
 - **Coins, Shop and ads.** See [Coins, Shop & ads](#coins-shop--ads) below.
 - Controls: arrow keys or WASD, swiping, or the on-screen d-pad. Enter/Space or the centre button
   selects in menus and pauses during play. Esc or P pauses too.
+- **Back button (◀, top-left)** during play pauses the game and opens a menu with **Resume** and **Main menu**.
+  In the web version, the phone's or browser's back button does the same: it pauses during play, goes back from
+  any menu, and only leaves the page from the main menu.
 - Works in portrait and landscape
 - Uses the YouTube Playables SDK:
   - `firstFrameReady()` and `gameReady()` lifecycle signals

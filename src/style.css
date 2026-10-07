@@ -47,12 +47,29 @@ html, body {
 
 #hud {
   display: flex;
+  align-items: center;
   justify-content: space-between;
+  gap: 1.5vmin;
   color: var(--lcd-fg);
   font-weight: bold;
   font-size: 4vmin;
   letter-spacing: 0.3vmin;
 }
+
+/* Back button: pauses and opens the pause menu. Hidden while a menu is open,
+   since every menu has its own Back / Menu option. */
+#back-btn {
+  font: inherit;
+  font-size: 4vmin;
+  line-height: 1;
+  padding: 1.2vmin 2.4vmin;
+  color: var(--lcd-bg);
+  background: var(--lcd-fg);
+  border: none;
+  border-radius: 0.8vmin;
+  cursor: pointer;
+}
+#lcd:has(#overlay:not(.hidden)) #back-btn { visibility: hidden; }
 
 #board {
   display: block;

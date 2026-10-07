@@ -293,6 +293,7 @@
   const toastEl = document.getElementById('toast');
   const pad = document.getElementById('pad');
   const roomInput = document.getElementById('room-input');
+  const backBtn = document.getElementById('back-btn');
 
   // ---- State -------------------------------------------------------------
   let cell = 16;
@@ -792,7 +793,9 @@
   }
 
   // ---- Overlay / menus ---------------------------------------------------
-  function showMenu(title, text, items, index = 0) {
+  function showMenu(title, text, items, index = 0, main = false) {
+    onMainMenu = main;
+    keepBackInGame();
     roomInput.classList.add('hidden');
     overlayTitle.textContent = title;
     overlayText.textContent = text;
@@ -841,7 +844,7 @@
     if (!inPlayables) items.push({ label: 'Online 2P', action: openOnline });
     items.push({ label: 'Shop', action: () => showShop(0) });
     items.push({ label: 'Settings', action: () => showSettings(0) });
-    showMenu('SNAKE', `Choose a mode  ·  ${save.coins} coins`, items);
+    showMenu('SNAKE', `Choose a mode  ·  ${save.coins} coins`, items, 0, true);
     updateHud();
   }
 
@@ -936,6 +939,7 @@
   }
 
   function play() {
+    keepBackInGame();
     hideOverlay();
     state = 'playing';
     lastTick = performance.now();
@@ -957,7 +961,7 @@
       { label: 'Resume', action: play },
       net
         ? { label: 'Leave game', action: leaveOnline }
-        : { label: 'Quit to menu', action: () => { recordBest(); persist(); showMainMenu(); } },
+        : { label: 'Main menu', action: () => { recordBest(); persist(); showMainMenu(); } },
     ]);
   }
 
@@ -1221,10 +1225,35 @@
     handleAction(btn.dataset.dir === 'pause' ? 'select' : btn.dataset.dir);
   });
 
+  // On-screen back button (top-left of the HUD): pause, which opens the menu.
+  backBtn.addEventListener('click', () => pause());
+
+  // Phone / browser back button (web version only; on YouTube the app owns
+  // navigation). While playing it pauses; in a menu it picks that menu's
+  // Back / Menu option; on the main menu it leaves the page as usual.
+  let onMainMenu = false;
+  const BACK_LABELS = ['Back', 'Cancel', 'Main menu', 'Menu', 'Leave game', 'Leave'];
+  function keepBackInGame() {
+    if (inPlayables || onMainMenu) return;
+    if (!(history.state && history.state.snake)) history.pushState({ snake: true }, '');
+  }
+  window.addEventListener('popstate', () => {
+    if (inPlayables) return;
+    if (state === 'playing' || state === 'levelup') {
+      pause();
+    } else {
+      const i = menuItems.findIndex((item) => BACK_LABELS.includes(item.label));
+      if (i < 0 || onMainMenu) return;
+      menuIndex = i;
+      activateMenu();
+    }
+    keepBackInGame();
+  });
+
   // Swipe anywhere on the screen (outside the d-pad and menu buttons) to steer.
   const touches = new Map();
   window.addEventListener('pointerdown', (e) => {
-    if (e.target.closest('#pad, #menu, #room-input')) return;
+    if (e.target.closest('#pad, #menu, #room-input, #back-btn')) return;
     touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
   });
   window.addEventListener('pointerup', (e) => {
