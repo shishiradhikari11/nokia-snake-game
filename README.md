@@ -1,14 +1,14 @@
 # Nokia Snake: YouTube Playable
 
 A classic Nokia 3310-style Snake game built as a [YouTube Playable](https://developers.google.com/youtube/gaming/playables).
-It is plain HTML, CSS and JavaScript, with no build tools or dependencies, and the whole bundle is about 31 KB.
+It is plain HTML, CSS and JavaScript, with no build tools or dependencies, and the YouTube bundle is about 41 KB.
 
 ## Features
 
 - Green LCD look and diamond food, like the original
 - **Levels** start at 1. Each level clears after a set number of foods, then the next level is harder.
   Each food is worth as many points as the current level.
-- **5 game modes**:
+- **6 game modes**:
   | Mode | Rules |
   |---|---|
   | **Classic** | No walls; the snake wraps around the edges. Faster every level (5 foods per level). |
@@ -16,6 +16,7 @@ It is plain HTML, CSS and JavaScript, with no build tools or dependencies, and t
   | **Maze** | A new brick maze every level (6 foods per level), and the snake resets to its starting length. If you crash, you can **retry the level you reached** instead of starting over. Your furthest level is saved, so the menu offers "Maze · Lv N" to continue. After 8 hand-made mazes, every level adds more random bricks, and every maze is checked so no part of the board is sealed off. |
   | **Time Attack** | 60 seconds to score as much as you can. It still levels up and speeds up. |
   | **2 Players** | Two snakes on one screen, competing for the same food. Hitting a wall, yourself or the other snake loses. A head-on crash is a draw. |
+  | **Online 2P** *(web version only)* | The same 2-player rules, but each person plays **on their own phone or computer**. See [Online 2P](#online-2p) below. |
 - **Settings**, like the old Nokia options menu:
   - **Walls**: Off (the snake wraps around the edges) or On (a solid border). Applies to Classic, Time Attack and 2 Players.
   - **Start level**: 1–9, so you can skip the slow early levels. Applies to every mode except Maze.
@@ -34,6 +35,38 @@ It is plain HTML, CSS and JavaScript, with no build tools or dependencies, and t
   - The best score across all modes is reported with `engagement.sendScore()`
   - Errors are reported with `health.logError()`
 - Outside YouTube it still runs, and the high score is saved in `localStorage`
+
+## Online 2P
+
+1. Player 1 opens the game and picks **Online 2P → Create room**. A 4-letter room code appears, for example `ROOM PHD3`.
+2. Player 1 taps **Share link** to send a link like `https://…/?room=PHD3` by WhatsApp, SMS and so on, or just tells their friend the code.
+3. Player 2 opens the link, which joins automatically, or picks **Online 2P → Join room** and types the code.
+4. The game starts on both devices. Player 1 is the **solid** snake and Player 2 is the **hollow** one.
+   Each player steers with arrows, swipes or the d-pad on their own device.
+5. Either player can pause, which pauses both. After a match, either player can choose **Play again**.
+   If someone leaves, the other player sees "FRIEND LEFT".
+
+How it works:
+- The two devices connect **directly to each other** (peer-to-peer WebRTC via [PeerJS](https://peerjs.com/)).
+  There is no game server to run or pay for. The free PeerJS cloud service only helps the two devices find each other.
+- Player 1's device runs the game, Player 2's device sends its moves and draws what Player 1's device sends back.
+- Only the 4-letter code, moves and board positions are exchanged. There are no accounts and no personal data.
+- Some strict networks (certain office or mobile networks) can block direct connections. If a room won't connect,
+  try Wi-Fi on both devices.
+- To use your own PeerServer instead of the free cloud one, set
+  `window.SNAKE_PEER_OPTIONS = { host, port, path }` before `game.js` loads.
+
+**Online 2P is not in the YouTube Playables build.** Playables can't make network requests other than the YouTube SDK,
+so `scripts/build.sh` leaves `online.js` out of the zip, and the game hides the menu option when running on YouTube.
+
+## Host the web version on GitHub Pages (free)
+
+The included workflow `.github/workflows/pages.yml` publishes the `src/` folder:
+
+1. Merge this branch into `main`.
+2. In the repo, open **Settings → Pages** and set **Source** to **GitHub Actions**.
+3. The workflow runs on every push to `main`, or you can run it from the **Actions** tab. The game will be at
+   `https://<your-user>.github.io/nokia-snake-game/`. Share that link, or a `?room=CODE` link, with friends.
 
 ## Run locally
 
@@ -56,7 +89,7 @@ Playables is invite-only. You can't upload from YouTube Studio; you need to be a
 
 1. **Apply for access.** Go to the [YouTube Playables developer page](https://developers.google.com/youtube/gaming/playables)
    and submit the interest form with your game details. You can link a playable demo, such as this repo on
-   GitHub Pages (see below).
+   GitHub Pages (see "Host the web version on GitHub Pages" above).
 2. **Get onboarded.** Once approved, you get access to the private developer resources: the full SDK docs,
    the **Playables Test Suite**, the certification requirements, and the submission portal.
 3. **Test in the Test Suite.** Upload `dist/nokia-snake-playable.zip` (or point it at a local server) and confirm:
@@ -76,16 +109,13 @@ Playables is invite-only. You can't upload from YouTube Studio; you need to be a
    screenshots, age rating and supported languages. YouTube reviews it, and if it passes, it goes live in the
    Playables tab.
 
-### Optional: host a public demo on GitHub Pages
-
-In the repo's **Settings → Pages**, deploy from the branch that holds the game, then link to
-`https://<user>.github.io/nokia-snake-game/src/` on your application form.
-
 ## Project layout
 
 ```
 src/index.html    page shell; the SDK script loads first
 src/style.css     Nokia LCD styling and responsive layout
-src/game.js       game loop, input and SDK integration
+src/game.js       game loop, modes, menus, input and SDK integration
+src/online.js     Online 2P connection (web only, not in the YouTube zip)
+.github/workflows/pages.yml  deploys src/ to GitHub Pages
 scripts/build.sh  builds the upload zip
 ```

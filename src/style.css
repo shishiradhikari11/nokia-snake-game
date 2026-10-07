@@ -137,3 +137,22 @@ html, body {
   white-space: nowrap;
 }
 #toast.hidden { display: none; }
+
+#room-input {
+  width: 50%;
+  font: inherit;
+  font-size: 7vmin;
+  font-weight: bold;
+  letter-spacing: 1.5vmin;
+  text-align: center;
+  text-transform: uppercase;
+  color: var(--lcd-fg);
+  background: transparent;
+  border: none;
+  border-bottom: 0.6vmin solid var(--lcd-fg);
+  outline: none;
+  user-select: text;
+  -webkit-user-select: text;
+}
+#room-input::placeholder { color: rgba(67, 82, 61, 0.35); }
+#room-input.hidden { display: none; }

@@ -108,10 +108,22 @@
       usesStartLevel: true,
       noBest: true,
     },
+    // Same rules as 2 Players, but each player is on their own device.
+    // The host runs the game; the guest only sends turns and draws snapshots.
+    online: {
+      name: 'Online 2P',
+      foodsPerLevel: 5,
+      tick: (lv) => Math.max(70, 170 - (lv - 1) * 10),
+      walls: () => edgeWalls(),
+      players: 2,
+      usesStartLevel: true,
+      noBest: true,
+      hidden: true,
+    },
   };
   // The "Walls" setting: wrap around the screen edge, or a solid border.
   const edgeWalls = () => (save.settings.wrap ? [] : border());
-  const MODE_IDS = Object.keys(MODES);
+  const MODE_IDS = Object.keys(MODES).filter((id) => !MODES[id].hidden);
 
   // ---- Maze layouts (20x20) ----------------------------------------------
   function hline(y, x0, x1) { const c = []; for (let x = x0; x <= x1; x++) c.push([x, y]); return c; }
@@ -212,6 +224,7 @@
   const menuEl = document.getElementById('menu');
   const toastEl = document.getElementById('toast');
   const pad = document.getElementById('pad');
+  const roomInput = document.getElementById('room-input');
 
   // ---- State -------------------------------------------------------------
   let cell = 16;
@@ -230,6 +243,13 @@
   let toastTimer = 0;
   let audioOn = sdk.audioEnabled();
   let audioCtx = null;
+  // Online play: `net` is { role: 'host' | 'guest', link } once connected,
+  // `lobby` is a pending create/join that can still be cancelled.
+  let net = null;
+  let lobby = null;
+  let gameId = 0;
+  const isGuest = () => !!net && net.role === 'guest';
+  const isHost = () => !!net && net.role === 'host';
 
   // ---- Audio (tiny Nokia-style beeps via WebAudio, no asset files) -------
   function beep(freq, duration) {
@@ -431,17 +451,32 @@
     beep(220, 0.3);
     if (!isDuel()) {
       endGame('GAME OVER');
-    } else if (losers.length === players.length) {
-      endGame('DRAW');
-    } else {
-      const winner = players.find((p) => !losers.includes(p));
-      endGame(`${winner.label} WINS`);
+      return;
     }
+    const winner = losers.length === players.length ? -1 : players.findIndex((p) => !losers.includes(p));
+    endGame(duelTitle(winner, 0), winner);
   }
 
-  function endGame(title) {
+  // `me` is this device's player index (online) — local 2P just names the winner.
+  function duelTitle(winner, me) {
+    if (winner === -1) return 'DRAW';
+    if (net) return winner === me ? 'YOU WIN' : 'YOU LOSE';
+    return `P${winner + 1} WINS`;
+  }
+
+  function endGame(title, winner = -1) {
     state = 'over';
     recordBest();
+    const scores = isDuel() ? players.map((p) => `${p.label} ${p.score}`).join('  ·  ') : `Score ${P1().score}`;
+    const text = `${scores}  ·  Level ${level}`;
+    if (isHost()) {
+      net.link.send({ t: 'over', winner, text });
+      showMenu(title, text, [
+        { label: 'Play again', action: startOnlineGame },
+        { label: 'Leave', action: leaveOnline },
+      ]);
+      return;
+    }
     const items = [];
     if (M().keepLevelOnCrash) {
       items.push({ label: `Retry Level ${level}`, action: () => retryLevel() });
@@ -449,8 +484,7 @@
     const replay = M().keepLevelOnCrash ? 1 : startLevelFor(mode);
     items.push({ label: M().keepLevelOnCrash ? 'Restart Level 1' : 'Play again', action: () => startMode(mode, replay) });
     items.push({ label: 'Menu', action: showMainMenu });
-    const scores = isDuel() ? players.map((p) => `${p.label} ${p.score}`).join('  ·  ') : `Score ${P1().score}`;
-    showMenu(title, `${scores}  ·  Level ${level}`, items);
+    showMenu(title, text, items);
   }
 
   function retryLevel() {
@@ -557,10 +591,11 @@
           endGame("TIME'S UP");
         }
       }
-      if (state === 'playing' && t - lastTick >= M().tick(level)) {
+      if (state === 'playing' && !isGuest() && t - lastTick >= M().tick(level)) {
         lastTick = t;
         step();
         draw();
+        broadcast();
       }
     }
     requestAnimationFrame(loop);
@@ -568,6 +603,7 @@
 
   // ---- Overlay / menus ---------------------------------------------------
   function showMenu(title, text, items, index = 0) {
+    roomInput.classList.add('hidden');
     overlayTitle.textContent = title;
     overlayText.textContent = text;
     menuItems = items;
@@ -608,6 +644,9 @@
       return { label, action: () => startMode(id, id === 'maze' ? save.mazeLevel : startLevelFor(id)) };
     });
     if (save.mazeLevel > 1) items.splice(3, 0, { label: 'Maze · from Lv 1', action: () => startMode('maze', 1) });
+    // Online play needs network access, which YouTube Playables does not allow,
+    // so it is only offered in the web version.
+    if (!inPlayables) items.push({ label: 'Online 2P', action: openOnline });
     items.push({ label: 'Settings', action: () => showSettings(0) });
     showMenu('SNAKE', 'Choose a mode', items);
     updateHud();
@@ -648,15 +687,226 @@
     lastTick = performance.now();
     updateHud();
     draw();
+    broadcast();
   }
 
   function pause() {
     if (state !== 'playing' && state !== 'levelup') return;
+    if (isGuest()) {
+      // The host owns the game; ask it to pause for both players.
+      net.link.send({ t: 'pause' });
+      return;
+    }
     state = 'paused';
+    if (net) net.link.send({ t: 'paused' });
     showMenu('PAUSED', `${M().name} · Level ${level}`, [
       { label: 'Resume', action: play },
-      { label: 'Quit to menu', action: () => { recordBest(); showMainMenu(); } },
+      net
+        ? { label: 'Leave game', action: leaveOnline }
+        : { label: 'Quit to menu', action: () => { recordBest(); showMainMenu(); } },
     ]);
+  }
+
+  // ---- Online 2P ---------------------------------------------------------
+  let onlineLoad = null;
+  function loadOnline() {
+    if (window.SnakeNet) return Promise.resolve();
+    onlineLoad = onlineLoad || new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'online.js';
+      s.onload = resolve;
+      s.onerror = () => { onlineLoad = null; reject(new Error('online.js missing')); };
+      document.head.appendChild(s);
+    });
+    return onlineLoad;
+  }
+
+  function openOnline(code) {
+    loadOnline().then(
+      () => (typeof code === 'string' ? joinRoom(code) : showOnlineMenu()),
+      () => showMenu('ONLINE', 'Online play is not available here.', [{ label: 'Back', action: showMainMenu }]),
+    );
+  }
+
+  function showOnlineMenu() {
+    state = 'menu';
+    showMenu('ONLINE 2P', 'Play a friend on another device', [
+      { label: 'Create room', action: createRoom },
+      { label: 'Join room', action: () => joinRoom('') },
+      { label: 'Back', action: showMainMenu },
+    ]);
+  }
+
+  // Shared by host and guest: what to do with the connection once it exists.
+  const linkHandlers = {
+    onData: (msg) => (isHost() ? hostReceive(msg) : guestReceive(msg)),
+    onClose: () => {
+      net = null;
+      state = 'over';
+      showMenu('FRIEND LEFT', 'The connection was closed.', [{ label: 'Menu', action: showMainMenu }]);
+    },
+  };
+
+  function onlineError(message, retry) {
+    lobby = null;
+    showMenu('ONLINE 2P', message, [
+      { label: 'Try again', action: retry },
+      { label: 'Back', action: showOnlineMenu },
+    ]);
+  }
+
+  function cancelLobby() {
+    if (lobby) lobby.cancel();
+    lobby = null;
+    showOnlineMenu();
+  }
+
+  function createRoom() {
+    showMenu('ONLINE 2P', 'Creating room…', [{ label: 'Cancel', action: cancelLobby }]);
+    lobby = window.SnakeNet.host({
+      ...linkHandlers,
+      onCode: (code) => {
+        showMenu(`ROOM ${code}`, 'Send your friend the code or link.\nWaiting for them to join…', [
+          { label: 'Share link', action: () => shareRoom(code) },
+          { label: 'Cancel', action: cancelLobby },
+        ]);
+      },
+      onConnect: (link) => {
+        lobby = null;
+        net = { role: 'host', link };
+        startOnlineGame();
+      },
+      onError: (message) => onlineError(message, createRoom),
+    });
+  }
+
+  function shareRoom(code) {
+    const url = `${location.origin}${location.pathname}?room=${code}`;
+    const text = `Play Snake with me! Room ${code}`;
+    if (navigator.share) {
+      navigator.share({ title: 'Nokia Snake', text, url }).catch(() => {});
+    } else if (navigator.clipboard) {
+      navigator.clipboard.writeText(url).then(() => toast('LINK COPIED', 1200), () => toast(`CODE ${code}`, 1500));
+    } else {
+      toast(`CODE ${code}`, 1500);
+    }
+  }
+
+  function joinRoom(prefill) {
+    state = 'menu';
+    const tryJoin = () => {
+      const code = window.SnakeNet.normalizeCode(roomInput.value);
+      if (code.length !== window.SnakeNet.CODE_LENGTH) {
+        toast('ENTER 4 LETTERS', 1000);
+        roomInput.focus();
+        return;
+      }
+      connect(code);
+    };
+    showMenu('JOIN ROOM', 'Enter your friend\'s room code', [
+      { label: 'Join', action: tryJoin },
+      { label: 'Back', action: showOnlineMenu },
+    ]);
+    roomInput.value = window.SnakeNet.normalizeCode(prefill);
+    roomInput.classList.remove('hidden');
+    roomInput.focus();
+    if (roomInput.value.length === window.SnakeNet.CODE_LENGTH) tryJoin();
+  }
+
+  function connect(code) {
+    showMenu('JOIN ROOM', `Connecting to ${code}…`, [{ label: 'Cancel', action: cancelLobby }]);
+    lobby = window.SnakeNet.join(code, {
+      ...linkHandlers,
+      onConnect: (link) => {
+        lobby = null;
+        net = { role: 'guest', link };
+        mode = 'online';
+        gameId = 0;
+        showMenu('CONNECTED', 'Starting…', [{ label: 'Leave', action: leaveOnline }]);
+      },
+      onError: (message) => onlineError(message, () => joinRoom(code)),
+    });
+  }
+
+  function leaveOnline() {
+    if (net) net.link.close();
+    net = null;
+    if (lobby) lobby.cancel();
+    lobby = null;
+    showMainMenu();
+  }
+
+  // Host: start (or restart) a match with a short "get ready" freeze.
+  function startOnlineGame() {
+    gameId++;
+    startMode('online', startLevelFor('online'));
+    state = 'levelup';
+    broadcast();
+    toast('YOU: SOLID SNAKE', 1800, () => {
+      if (state !== 'levelup') return;
+      state = 'playing';
+      lastTick = performance.now();
+      broadcast();
+    });
+  }
+
+  // Sends the board to the guest. Pauses and game-overs have their own messages.
+  function broadcast() {
+    if (!isHost() || (state !== 'playing' && state !== 'levelup')) return;
+    net.link.send({
+      t: 'snap',
+      game: gameId,
+      state,
+      level,
+      players: players.map((p) => ({ snake: p.snake, score: p.score })),
+      food,
+      bonus,
+      bricks: [...bricks],
+    });
+  }
+
+  function hostReceive(msg) {
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.t === 'turn' && DIRS[msg.d] && (state === 'playing' || state === 'levelup')) turn(msg.d, 1);
+    else if (msg.t === 'pause') pause();
+    else if (msg.t === 'resume' && state === 'paused') play();
+    else if (msg.t === 'again' && state === 'over') startOnlineGame();
+  }
+
+  function guestReceive(msg) {
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.t === 'snap') {
+      const newGame = msg.game !== gameId;
+      const newLevel = !newGame && msg.level !== level;
+      gameId = msg.game;
+      level = msg.level;
+      players = msg.players.map((p, i) => ({ snake: p.snake, score: p.score, label: `P${i + 1}`, queue: [] }));
+      food = msg.food;
+      bonus = msg.bonus;
+      bricks = new Set(msg.bricks);
+      if ((msg.state === 'playing' || msg.state === 'levelup') && state !== msg.state) {
+        overlay.classList.add('hidden');
+        menuItems = [];
+        menuEl.replaceChildren();
+      }
+      state = msg.state === 'levelup' ? 'levelup' : 'playing';
+      if (newGame) toast('YOU: HOLLOW SNAKE', 1800);
+      else if (newLevel) toast(`LEVEL ${level}`, 900);
+      updateHud();
+      draw();
+    } else if (msg.t === 'paused') {
+      state = 'paused';
+      showMenu('PAUSED', `${M().name} · Level ${level}`, [
+        { label: 'Resume', action: () => net && net.link.send({ t: 'resume' }) },
+        { label: 'Leave game', action: leaveOnline },
+      ]);
+    } else if (msg.t === 'over') {
+      state = 'over';
+      showMenu(duelTitle(msg.winner, 1), msg.text, [
+        { label: 'Play again', action: () => { if (net) { net.link.send({ t: 'again' }); toast('WAITING…', 1200); } } },
+        { label: 'Leave', action: leaveOnline },
+      ]);
+    }
   }
 
   // YouTube asks the game to pause when the player leaves / backgrounds it.
@@ -686,7 +936,9 @@
     }
     if (state !== 'playing' && state !== 'levelup') return;
     if (name === 'select' || name === 'back') { pause(); return; }
-    if (DIRS[name]) turn(name, isDuel() ? who : 0);
+    if (!DIRS[name]) return;
+    if (isGuest()) net.link.send({ t: 'turn', d: name });
+    else turn(name, isDuel() && !net ? who : 0);
   }
 
   // [action, player]; WASD steers P2 in 2 Players and P1 otherwise.
@@ -696,6 +948,12 @@
     Space: ['select', 0], Enter: ['select', 0], KeyP: ['back', 0], Escape: ['back', 0],
   };
   window.addEventListener('keydown', (e) => {
+    if (e.target === roomInput) {
+      // Let the player type the code; Enter joins, Escape goes back.
+      if (e.key === 'Enter') { e.preventDefault(); menuIndex = 0; activateMenu(); }
+      else if (e.key === 'Escape') { e.preventDefault(); showOnlineMenu(); }
+      return;
+    }
     const k = KEYS[e.code];
     if (!k) return;
     e.preventDefault();
@@ -714,7 +972,7 @@
   // Tracked per pointer so both players can swipe at the same time.
   const touches = new Map();
   window.addEventListener('pointerdown', (e) => {
-    if (e.target.closest('#pad, #menu')) return;
+    if (e.target.closest('#pad, #menu, #room-input')) return;
     touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
   });
   window.addEventListener('pointerup', (e) => {
@@ -726,7 +984,7 @@
     if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
     if (state !== 'playing' && state !== 'levelup') return;
     const who = isDuel() && start.x < window.innerWidth / 2 ? 1 : 0;
-    turn(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up'), who);
+    handleAction(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up'), who);
   });
   window.addEventListener('pointercancel', (e) => touches.delete(e.pointerId));
 
@@ -746,6 +1004,13 @@
     }
     level = 1;
     showMainMenu();
+    const room = new URLSearchParams(location.search).get('room');
+    if (room && !inPlayables) {
+      // Opened from a shared link: drop the code from the URL so a reload
+      // does not rejoin, then go straight to joining.
+      history.replaceState(null, '', location.pathname);
+      openOnline(room);
+    }
     sdk.gameReady();
     requestAnimationFrame(loop);
   }

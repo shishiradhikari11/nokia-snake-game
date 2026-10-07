@@ -5,6 +5,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 rm -rf dist
 mkdir -p dist
-(cd src && zip -r -X ../dist/nokia-snake-playable.zip . -x '.*')
+# online.js is the web-only online multiplayer; YouTube Playables must not make
+# network requests, so it is left out of the upload.
+(cd src && zip -r -X ../dist/nokia-snake-playable.zip . -x '.*' -x 'online.js')
 ls -lh dist/nokia-snake-playable.zip
 unzip -l dist/nokia-snake-playable.zip
