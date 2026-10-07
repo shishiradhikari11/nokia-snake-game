@@ -98,3 +98,41 @@ html, body {
 #pad [data-dir="pause"] { grid-column: 2; grid-row: 2; font-size: 3.6vmin; }
 #pad [data-dir="right"] { grid-column: 3; grid-row: 2; }
 #pad [data-dir="down"]  { grid-column: 2; grid-row: 3; }
+
+#menu {
+  display: flex;
+  flex-direction: column;
+  gap: 1.2vmin;
+  width: 70%;
+}
+#menu:empty { display: none; }
+#menu button {
+  font: inherit;
+  font-size: 3.8vmin;
+  font-weight: bold;
+  padding: 1.2vmin 2vmin;
+  color: var(--lcd-fg);
+  background: transparent;
+  border: 0.5vmin solid var(--lcd-fg);
+  border-radius: 1vmin;
+  cursor: pointer;
+}
+#menu button.selected {
+  color: var(--lcd-bg);
+  background: var(--lcd-fg);
+}
+
+#toast {
+  position: absolute;
+  left: 50%;
+  top: 45%;
+  transform: translate(-50%, -50%);
+  padding: 1vmin 3vmin;
+  color: var(--lcd-bg);
+  background: var(--lcd-fg);
+  font-size: 5vmin;
+  font-weight: bold;
+  letter-spacing: 0.5vmin;
+  pointer-events: none;
+}
+#toast.hidden { display: none; }
