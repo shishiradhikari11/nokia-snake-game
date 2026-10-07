@@ -1,7 +1,7 @@
 # Nokia Snake: YouTube Playable
 
 A classic Nokia 3310-style Snake game built as a [YouTube Playable](https://developers.google.com/youtube/gaming/playables).
-It is plain HTML, CSS and JavaScript, with no build tools or dependencies, and the whole bundle is under 30 KB.
+It is plain HTML, CSS and JavaScript, with no build tools or dependencies, and the whole bundle is about 31 KB.
 
 ## Features
 
